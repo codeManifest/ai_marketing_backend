@@ -1,0 +1,1530 @@
+// schema.prisma
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@map("accounts")
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+model User {
+  id            String    @id @default(cuid())
+  name          String?
+  email         String    @unique
+  password      String?
+  emailVerified DateTime?
+  image         String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  // Account-level subscription
+  subscriptionId String?
+
+  // Moderation & Suspension
+  status          UserStatus @default(ACTIVE)
+  statusReason    String?    @db.Text
+  statusUpdatedAt DateTime?
+  statusUpdatedBy String?
+
+  // Relations
+  accounts            Account[]
+  sessions            Session[]
+  memberships         Membership[]
+  AuditLog            AuditLog[]
+  Invitation          Invitation[]
+  subscriptions       Subscription[]
+  AIUsage             AIUsage[]
+  payments            Payment[]
+  SubscriptionHistory SubscriptionHistory[]
+  ownedWorkspaces     Workspace[]           @relation("WorkspaceOwner") // User's owned workspaces
+  Post                Post[]
+  systemRoles         UserSystemRole[]
+
+  @@map("users")
+}
+
+enum InvitationStatus {
+  PENDING
+  ACCEPTED
+  EXPIRED
+  REVOKED
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+  @@map("verification_tokens")
+}
+
+// User invitation system
+model Invitation {
+  id          String           @id @default(cuid())
+  workspaceId String
+  email       String
+  role        UserRole
+  token       String           @unique
+  invitedBy   String // userId
+  status      InvitationStatus @default(PENDING)
+  expiresAt   DateTime
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  // Relations
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User?     @relation(fields: [invitedBy], references: [id])
+
+  @@unique([workspaceId, email])
+  @@index([token])
+  @@map("invitations")
+}
+
+// Multi-tenant workspace for each brand/business
+model Workspace {
+  id          String   @id @default(cuid())
+  name        String
+  description String?  @db.Text
+  slug        String   @unique
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  isActive    Boolean  @default(true)
+  settings    Json?
+
+  // Owner reference (user who created this workspace)
+  ownerId String
+
+  // Subscription reference (which subscription this workspace belongs to)
+  subscriptionId String?
+
+  status workspace_status @default(ACTIVE)
+
+  // Brand details
+  brandName   String
+  brandpdfUrl String?
+  industry    String?
+  website     String?
+  timezone    String  @default("UTC")
+
+  // Moderation & Suspension details
+  statusReason    String?   @db.Text
+  statusUpdatedAt DateTime?
+  statusUpdatedBy String?
+
+  // Relations
+  owner              User                 @relation("WorkspaceOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  subscription       Subscription?        @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
+  limitUsage         WorkspaceLimitUsage?
+  AuditLog           AuditLog[]
+  memberships        Membership[]
+  socialProfiles     SocialProfile[]
+  posts              Post[]
+  tasks              Task[]
+  AISettings         AISettings[]
+  Replies            Reply[]
+  Payment            Payment[]
+  Invitation         Invitation[]
+  AIUsage            AIUsage[]
+  ContentCategory    ContentCategory[]
+  AIPrompt           AIPrompt[]
+  PostTemplate       PostTemplate[]
+  ContentPlan        ContentPlan[]
+  GeneratedPost      GeneratedPost[]
+  BulkContentSession BulkContentSession[]
+  ContentCalendar    ContentCalendar[]
+  workspaceAnalytics WorkspaceAnalytic[]
+  adCampaigns        AdCampaign[]
+  leads              Lead[]
+  socialCredentials  SocialCredential[]
+  notifications      Notification[]
+  brandProfile       BrandProfile?
+  customRoles        WorkspaceRole[]
+  verifiedDomains    VerifiedDomain[]
+  customForms        CustomForm[]
+  conversionFunnels  ConversionFunnel[]
+
+  @@map("workspaces")
+}
+
+// Payment model for tracking transactions (account-level)
+model Payment {
+  id             String        @id @default(cuid())
+  userId         String // Account owner
+  subscriptionId String? // For subscription payments
+  workspaceId    String? // Optional - for workspace-specific payments
+  planId         String
+  amount         Float
+  currency       String        @default("INR")
+  status         PaymentStatus @default(PENDING_PAYMENT)
+
+  // Razorpay fields
+  razorpayPaymentId String?
+  razorpayOrderId   String?
+  razorpaySignature String?
+
+  // Timestamps
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  completedAt DateTime?
+
+  // Error handling
+  errorMessage String?
+  retryCount   Int     @default(0)
+
+  // Metadata
+  metadata Json?
+
+  // Relations
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  subscription Subscription? @relation(fields: [subscriptionId], references: [id])
+  workspace    Workspace?    @relation(fields: [workspaceId], references: [id])
+  plan         Plan          @relation(fields: [planId], references: [id])
+
+  @@index([userId])
+  @@index([subscriptionId])
+  @@index([status])
+  @@index([createdAt])
+  @@map("payments")
+}
+
+// User membership in workspaces with roles
+model Membership {
+  id          String   @id @default(cuid())
+  userId      String
+  workspaceId String
+  role        UserRole @default(MEMBER)
+  joinedAt    DateTime @default(now())
+  invitedBy   String?
+
+  // Relations
+  memberRoles       MembershipRole[]
+  directPermissions MembershipPermission[]
+  user              User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace         Workspace              @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, workspaceId])
+  @@map("memberships")
+}
+
+// Connected social media profiles
+model SocialProfile {
+  id          String         @id @default(cuid())
+  workspaceId String
+  platform    SocialPlatform
+  platformId  String // Facebook Page ID same:externalId,
+  avatar      String?
+  name        String
+  username    String?
+  email       String?
+
+  accessToken    String?   @db.Text
+  refreshToken   String?   @db.Text
+  tokenExpiresAt DateTime?
+  isConnected    Boolean   @default(true)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  // Platform-specific data
+  profilePicture String?
+  followersCount Int?
+  likesCount     Int?
+  lastSynced     DateTime?
+
+  // Settings
+  autoRespond Boolean @default(false)
+  autoPost    Boolean @default(false)
+
+  // Relations
+  workspace     Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  posts         Post[]
+  replies       Reply[]
+  analytics     SocialAnalytics[]
+  GeneratedPost GeneratedPost[]
+
+  @@unique([workspaceId, platform, platformId])
+  @@map("social_profiles")
+}
+
+// Content posts for social media
+model Post {
+  id              String         @id @default(cuid())
+  workspaceId     String
+  socialProfileId String
+  content         String         @db.Text
+  mediaUrls       Json? // JSON array of image/video URLs
+  hashtags        String?        @db.Text
+  scheduledFor    DateTime? // null for immediate posting
+  postedAt        DateTime? // null if not posted yet
+  status          PostStatus     @default(DRAFT)
+  platform        SocialPlatform
+  bulkId          String?
+  bulkTitle       String?
+  postId          String? // Platform's post ID after publishing
+  aiGenerated     Boolean        @default(false)
+  aiPrompt        String?        @db.Text
+  engagementRate  Float?         @default(0)
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+  userId          String?
+
+  // Relations
+  user          User?           @relation(fields: [userId], references: [id])
+  workspace     Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  socialProfile SocialProfile   @relation(fields: [socialProfileId], references: [id], onDelete: Cascade)
+  analytics     PostAnalytics[]
+  comments      Comment[]
+  GeneratedPost GeneratedPost[]
+
+  @@map("posts")
+}
+
+// AI-generated replies for reviews and comments
+model Reply {
+  id              String         @id @default(cuid())
+  workspaceId     String
+  socialProfileId String
+  originalMessage String         @db.Text
+  aiReply         String         @db.Text
+  sentiment       Sentiment?
+  category        ReplyCategory
+  status          ReplyStatus    @default(PENDING)
+  platform        SocialPlatform
+  platformPostId  String? // ID of the post being replied to
+  platformUserId  String? // ID of the user being replied to
+  sentAt          DateTime?
+  createdAt       DateTime       @default(now())
+
+  // Relations
+  workspace     Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  socialProfile SocialProfile @relation(fields: [socialProfileId], references: [id], onDelete: Cascade)
+
+  @@map("replies")
+}
+
+// Task management within workspaces
+model Task {
+  id          String     @id @default(cuid())
+  workspaceId String
+  title       String
+  description String?    @db.Text
+  status      TaskStatus @default(PENDING)
+  priority    Priority   @default(MEDIUM)
+  dueDate     DateTime?
+  assignedTo  String? // userId
+  completedAt DateTime?
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  // Relations
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@map("tasks")
+}
+
+// Analytics data for social profiles
+model SocialAnalytics {
+  id              String   @id @default(cuid())
+  socialProfileId String
+  date            DateTime
+  impressions     Int      @default(0)
+  engagements     Int      @default(0)
+  likes           Int      @default(0)
+  comments        Int      @default(0)
+  shares          Int      @default(0)
+  followers       Int      @default(0)
+  reach           Int      @default(0)
+  createdAt       DateTime @default(now())
+
+  // Relations
+  socialProfile SocialProfile @relation(fields: [socialProfileId], references: [id], onDelete: Cascade)
+
+  @@unique([socialProfileId, date])
+  @@map("social_analytics")
+}
+
+// Post-level analytics
+model PostAnalytics {
+  id          String   @id @default(cuid())
+  postId      String
+  date        DateTime
+  impressions Int      @default(0)
+  engagements Int      @default(0)
+  likes       Int      @default(0)
+  comments    Int      @default(0)
+  shares      Int      @default(0)
+  clicks      Int      @default(0)
+  createdAt   DateTime @default(now())
+
+  // Relations
+  post Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  @@unique([postId, date])
+  @@map("post_analytics")
+}
+
+// Comments on posts
+model Comment {
+  id         String     @id @default(cuid())
+  postId     String
+  platformId String // Comment ID from the social platform
+  authorName String
+  authorId   String?
+  content    String     @db.Text
+  sentiment  Sentiment?
+  replied    Boolean    @default(false)
+  createdAt  DateTime
+  fetchedAt  DateTime   @default(now())
+
+  // Relations
+  post Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  @@unique([postId, platformId])
+  @@map("comments")
+}
+
+// Account-level subscription plans
+model Plan {
+  id                String       @id @default(cuid())
+  name              String       @unique
+  price             Decimal
+  maxWorkspaces     Int          @default(1)
+  monthlyAiCredits  Int          @default(100)
+  maxSocialProfiles Int          @default(5)
+  currency          String       @default("INR")
+  isTrial           Boolean      @default(false)
+  billingCycle      BillingCycle @default(MONTHLY)
+  features          Json
+  isActive          Boolean      @default(true)
+
+  // Granular Feature Flags
+  includeSeoTool         Boolean @default(false)
+  allowedVideos          Boolean @default(false)
+  allowedGraphics        Boolean @default(false)
+  includeAdManager       Boolean @default(false)
+  includeLeadsCRM        Boolean @default(false)
+  includeAnalytics       Boolean @default(false)
+  includeAiContentStudio Boolean @default(false)
+  includeAutomation      Boolean @default(false)
+  includeWebsiteManager  Boolean @default(false)
+
+  // AI Engine Models Assignment
+  includeTextModel     AIModel @default(GEMINI_2_5_FLASH)
+  includeGraphicsModel AIModel @default(IMAGEN_3)
+  includeVideoModel    AIModel @default(VEO)
+
+  // Capacity and Generation Limits (-1 for unlimited)
+  maxAiAutoReplies  Int @default(50)
+  maxPostsGenerated Int @default(100)
+  maxAiTemplates    Int @default(5)
+  maxCategories     Int @default(10)
+  maxAiPrompts      Int @default(10)
+  maxInboxReplies   Int @default(500)
+  annualDiscount    Int @default(0) // Discount percentage for annual plans (0 to 80)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  subscriptions Subscription[]
+  payments      Payment[]
+
+  @@map("plans")
+}
+
+// Account-level subscriptions
+model Subscription {
+  id      String             @id @default(cuid())
+  userId  String // Account owner
+  planId  String
+  status  SubscriptionStatus @default(ACTIVE)
+  isTrial Boolean            @default(false)
+
+  // Razorpay fields
+  razorpaySubscriptionId String?
+  razorpayCustomerId     String?
+  razorpayOrderId        String?
+
+  // Billing period
+  currentPeriodStart DateTime?
+  currentPeriodEnd   DateTime?
+  cancelAtPeriodEnd  Boolean   @default(false)
+
+  // Usage tracking
+  usedWorkspaces Int @default(0)
+  usedAiCredits  Int @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  user       User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  plan       Plan                  @relation(fields: [planId], references: [id])
+  workspaces Workspace[] // All workspaces under this subscription
+  payments   Payment[]
+  history    SubscriptionHistory[]
+  AIUsage    AIUsage[]
+
+  @@unique([userId, status], map: "active_subscription_per_user") // Only one active subscription per user
+  @@index([status])
+  @@index([currentPeriodEnd])
+  @@map("subscriptions")
+}
+
+model SubscriptionHistory {
+  id             String   @id @default(cuid())
+  subscriptionId String
+  userId         String
+  oldPlanId      String?
+  newPlanId      String
+  changeDate     DateTime @default(now())
+  reason         String? // upgrade/downgrade/cancellation
+
+  // Relations
+  subscription Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("subscription_history")
+}
+
+// AI model settings and usage tracking
+model AISettings {
+  id          String    @id @default(cuid())
+  workspaceId String
+  model       String    @default("gpt-4")
+  maxTokens   Int       @default(500)
+  temperature Float     @default(0.7)
+  usageCount  Int       @default(0)
+  lastUsed    DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  // Relations
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId])
+  @@map("ai_settings")
+}
+
+// AI Usage tracking
+model AIUsage {
+  id             String   @id @default(cuid())
+  userId         String
+  workspaceId    String?
+  subscriptionId String?
+  feature        String // "content_generation", "sentiment_analysis", "reply_generation"
+  provider       String?
+  model          String?
+  metadata       Json?
+  details        Json?
+  creditsUsed    Int
+  inputTokens    Int?
+  outputTokens   Int?
+  cost           Decimal? // Cost incurred for this usage
+  createdAt      DateTime @default(now())
+
+  // Relations
+  user         User          @relation(fields: [userId], references: [id])
+  workspace    Workspace?    @relation(fields: [workspaceId], references: [id])
+  subscription Subscription? @relation(fields: [subscriptionId], references: [id])
+
+  @@index([userId])
+  @@index([workspaceId])
+  @@index([createdAt])
+  @@map("ai_usage")
+}
+
+model AuditLog {
+  id          String   @id @default(cuid())
+  workspaceId String?
+  userId      String
+  action      String
+  resource    String
+  resourceId  String?
+  details     Json?
+  ipAddress   String?
+  userAgent   String?
+  createdAt   DateTime @default(now())
+
+  // Relations
+  workspace Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User       @relation(fields: [userId], references: [id])
+
+  @@index([workspaceId])
+  @@index([userId])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+// Enums
+enum UserRole {
+  SUPER_ADMIN
+  OWNER
+  ADMIN
+  MANAGER
+  SUPPORT
+  CONTENT_CREATOR
+  ANALYST
+  VIEWER
+  MEMBER
+}
+
+enum SocialPlatform {
+  FACEBOOK
+  INSTAGRAM
+  LINKEDIN
+  GOOGLE_MY_BUSINESS
+  TWITTER
+  TIKTOK
+  PINTEREST
+  YOUTUBE
+}
+
+enum PostStatus {
+  DRAFT
+  SCHEDULED
+  POSTING
+  PENDING
+
+  POSTED
+  FAILED
+  CANCELLED
+}
+
+enum ReplyStatus {
+  PENDING
+  APPROVED
+  SENT
+  REJECTED
+  FAILED
+}
+
+enum ReplyCategory {
+  REVIEW
+  COMMENT
+  MESSAGE
+  MENTION
+}
+
+enum Sentiment {
+  POSITIVE
+  NEUTRAL
+  NEGATIVE
+}
+
+enum TaskStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+enum Priority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  CANCELLED
+  PAST_DUE
+  TRIAL
+  INCOMPLETE
+  PENDING
+  EXPIRED
+}
+
+enum PaymentStatus {
+  PENDING_PAYMENT
+  PAID_PAYMENT
+  FAILED_PAYMENT
+  REFUND_PAYMENT
+  PARTIALLY_REFUNDED
+}
+
+enum workspace_status {
+  ACTIVE
+  SUSPENDED
+  DEACTIVE
+}
+
+enum BillingCycle {
+  MONTHLY
+  YEARLY
+  LIFETIME
+}
+
+// new models
+
+// Add these new models to your existing schema
+
+// Content Categories and Templates
+model ContentCategory {
+  id          String   @id @default(cuid())
+  workspaceId String
+  name        String
+  description String?
+  color       String? // For UI display
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  workspace     Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  contentPlans  ContentPlan[]
+  aiPrompts     AIPrompt[]
+  postTemplates PostTemplate[]
+
+  @@map("content_categories")
+}
+
+// AI Prompts for different content types
+model AIPrompt {
+  id            String   @id @default(cuid())
+  workspaceId   String
+  categoryId    String
+  name          String
+  prompt        String   @db.Text
+  description   String?
+  exampleOutput String?  @db.Text
+  isActive      Boolean  @default(true)
+  temperature   Float    @default(0.7)
+  maxTokens     Int      @default(1000)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  // Relations
+  workspace    Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  category     ContentCategory @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  contentPlans ContentPlan[]
+
+  @@map("ai_prompts")
+}
+
+// Post Templates for consistent formatting
+model PostTemplate {
+  id          String   @id @default(cuid())
+  workspaceId String
+  categoryId  String
+  name        String
+  template    String   @db.Text
+  description String?
+  variables   Json? // Define template variables like {topic}, {hashtags}, etc.
+  example     String?  @db.Text
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  workspace    Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  category     ContentCategory @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  contentPlans ContentPlan[]
+
+  @@map("post_templates")
+}
+
+// Content Planning - Main model for automated scheduling
+model ContentPlan {
+  id          String  @id @default(cuid())
+  workspaceId String
+  categoryId  String
+  promptId    String?
+  templateId  String?
+  name        String
+  description String?
+
+  // Content settings
+  topics   String  @db.Text // Comma-separated topics or JSON array
+  tone     String? // Professional, Casual, Funny, etc.
+  language String  @default("en")
+
+  // Scheduling configuration
+  frequency      ScheduleFrequency
+  postsPerWeek   Int               @default(1)
+  preferredDays  Json? // Preferred days of week [1,3,5] where 1=Monday
+  preferredTimes Json? // Preferred times ["09:00", "14:00", "18:00"]
+  timezone       String            @default("UTC")
+
+  // Platform targeting
+  platforms Json // Array of SocialPlatform values
+
+  // Social profiles to post to
+  socialProfileIds Json? // Array of social profile IDs
+
+  // Content generation settings
+  autoGenerate     Boolean @default(true)
+  requireApproval  Boolean @default(false)
+  autoPost         Boolean @default(false)
+  generateGraphics Boolean @default(true)
+  generateVideos   Boolean @default(true)
+  budget           Float   @default(0)
+  objective        String  @default("Conversions")
+
+  // Status
+  status          PlanStatus @default(ACTIVE)
+  lastGeneratedAt DateTime?
+
+  // Limits and tracking
+  maxPostsPerMonth Int?
+  postsGenerated   Int  @default(0)
+  postsPosted      Int  @default(0)
+
+  // Generation Progress & State
+  isGenerating      Boolean  @default(false)
+  genPostsTotal     Int      @default(0)
+  genPostsCompleted Int      @default(0)
+  genMediaTotal     Int      @default(0)
+  genMediaCompleted Int      @default(0)
+  generationPaused  Boolean  @default(false)
+  generationAborted Boolean  @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  workspace      Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  category       ContentCategory @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  prompt         AIPrompt?       @relation(fields: [promptId], references: [id])
+  template       PostTemplate?   @relation(fields: [templateId], references: [id])
+  generatedPosts GeneratedPost[]
+
+  @@map("content_plans")
+}
+
+// Generated posts from content plans
+model GeneratedPost {
+  id              String  @id @default(cuid())
+  contentPlanId   String
+  workspaceId     String
+  socialProfileId String?
+
+  // Content
+  title     String?
+  content   String  @db.Text
+  mediaUrls Json? // JSON array of image/video URLs
+  hashtags  String? @db.Text
+  topics    Json? // Topics used for generation
+
+  // Scheduling
+  scheduledFor DateTime?
+  postedAt     DateTime?
+
+  // Status
+  status GeneratedPostStatus @default(DRAFT)
+
+  // AI Generation info
+  aiPrompt         String? @db.Text
+  aiModel          String?
+  promptTokens     Int?
+  completionTokens Int?
+  brandContextUsed Boolean @default(false)
+  brandContext     String? @db.Text
+
+  // Approval workflow
+  requiresApproval Boolean   @default(false)
+  approvedBy       String? // userId
+  approvedAt       DateTime?
+  rejectionReason  String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  contentPlan   ContentPlan    @relation(fields: [contentPlanId], references: [id], onDelete: Cascade)
+  workspace     Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  socialProfile SocialProfile? @relation(fields: [socialProfileId], references: [id])
+  post          Post?          @relation(fields: [postId], references: [id])
+
+  // Link to actual posted post
+  postId String?
+
+  @@map("generated_posts")
+}
+
+// Bulk content generation sessions
+model BulkContentSession {
+  id          String  @id @default(cuid())
+  workspaceId String
+  name        String
+  description String?
+
+  // Configuration
+  categories    Json? // Array of category IDs
+  totalPosts    Int
+  timeframeDays Int // Generate posts for next X days
+  platforms     Json // Target platforms
+
+  // Status
+  status         BulkSessionStatus @default(PENDING)
+  progress       Float             @default(0) // 0-100
+  postsGenerated Int               @default(0)
+
+  // Results
+  generatedPosts Json? // Array of generated post IDs
+
+  startedAt   DateTime?
+  completedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  // Relations
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@map("bulk_content_sessions")
+}
+
+// Content Calendar for visualization
+model ContentCalendar {
+  id          String   @id @default(cuid())
+  workspaceId String
+  date        DateTime
+  posts       Json? // Array of posts scheduled for this date
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, date])
+  @@map("content_calendar")
+}
+
+// Add these enums to your existing enums
+
+enum ScheduleFrequency {
+  DAILY
+  WEEKLY
+  MONTHLY
+  CUSTOM
+}
+
+enum PlanStatus {
+  ACTIVE
+  PAUSED
+  COMPLETED
+  CANCELLED
+}
+
+enum GeneratedPostStatus {
+  DRAFT
+  GENERATED
+  APPROVED
+  REJECTED
+  SCHEDULED
+  POSTED
+  FAILED
+}
+
+enum BulkSessionStatus {
+  PENDING
+  GENERATING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+// WorkspaceAnalytics model for snapshot caching
+model WorkspaceAnalytic {
+  id          String   @id @default(cuid())
+  workspaceId String
+  date        DateTime @default(now())
+
+  // Daily overall metrics
+  impressions Int   @default(0)
+  clicks      Int   @default(0)
+  conversions Int   @default(0)
+  revenue     Float @default(0)
+  cost        Float @default(0)
+
+  // Channel breakdown clicks
+  facebookClicks  Int @default(0)
+  instagramClicks Int @default(0)
+  linkedinClicks  Int @default(0)
+  tiktokClicks    Int @default(0)
+  googleClicks    Int @default(0)
+  otherClicks     Int @default(0)
+
+  // Funnel steps counts
+  funnelImpressions  Int @default(0)
+  funnelClicks       Int @default(0)
+  funnelLandingViews Int @default(0)
+  funnelLeads        Int @default(0)
+  funnelConversions  Int @default(0)
+
+  // Device breakdown clicks
+  mobileClicks  Int @default(0)
+  desktopClicks Int @default(0)
+  tabletClicks  Int @default(0)
+
+  // JSON breakdown structures
+  geographic   Json? // e.g. { "US": 28.6, "IN": 18.3, ... }
+  demographics Json? // e.g. { "age": { "18-24": 18, ... }, "gender": { "male": 58, "female": 42 } }
+
+  // Relations
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, date])
+  @@map("workspace_analytics")
+}
+
+// Ad Campaign model for tracking ads across platforms
+model AdCampaign {
+  id          String   @id @default(cuid())
+  workspaceId String
+  name        String
+  platform    String // meta, google, linkedin, tiktok
+  status      String // Active, Paused, Draft
+  budget      String
+  spend       Float    @default(0)
+  impressions Int      @default(0)
+  clicks      Int      @default(0)
+  ctr         String   @default("0%")
+  conversions Int      @default(0)
+  cpa         Float    @default(0)
+  roas        String   @default("—")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@map("ad_campaigns")
+}
+
+model Lead {
+  id          String   @id @default(cuid())
+  workspaceId String
+  name        String
+  email       String
+  phone       String?
+  company     String?
+  title       String?
+  status      String   @default("New") // New, Contacted, Qualified, Converted, Lost
+  score       Int      @default(50)
+  source      String   @default("Website")
+  ownerName   String?
+  ownerAvatar String?
+  location    String?
+  campaign    String?
+  tags        String?  @default("")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // CRM Sub-relations
+  notes      LeadNote[]
+  tasks      LeadTask[]
+  deals      LeadDeal[]
+  activities LeadActivity[]
+  webAnalyticsEvents WebAnalyticsEvent[]
+
+  // Relations
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@map("leads")
+}
+
+model LeadNote {
+  id        String   @id @default(cuid())
+  leadId    String
+  content   String   @db.Text
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  lead Lead @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  @@map("lead_notes")
+}
+
+model LeadTask {
+  id        String   @id @default(cuid())
+  leadId    String
+  text      String
+  done      Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  lead Lead @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  @@map("lead_tasks")
+}
+
+model LeadDeal {
+  id        String   @id @default(cuid())
+  leadId    String
+  name      String
+  value     String
+  stage     String
+  date      String
+  createdAt DateTime @default(now())
+
+  lead Lead @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  @@map("lead_deals")
+}
+
+model LeadActivity {
+  id        String   @id @default(cuid())
+  leadId    String
+  time      String
+  title     String
+  desc      String
+  createdAt DateTime @default(now())
+
+  lead Lead @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  @@map("lead_activities")
+}
+
+model SocialCredential {
+  id           String         @id @default(cuid())
+  workspaceId  String
+  platform     SocialPlatform
+  clientId     String // App ID or Client ID
+  clientSecret String         @db.Text // Encrypted App Secret or Client Secret
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+
+  // Relations
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, platform])
+  @@map("social_credentials")
+}
+
+model Notification {
+  id          String   @id @default(cuid())
+  workspaceId String
+  userId      String?
+  title       String
+  message     String   @db.Text
+  type        String   @default("info") // "info", "success", "warning", "error"
+  read        Boolean  @default(false)
+  link        String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+  @@index([read])
+  @@map("notifications")
+}
+
+// Brand Profile for AI Writer engine Context
+model BrandProfile {
+  id             String   @id @default(cuid())
+  workspaceId    String   @unique
+  brandName      String
+  description    String?  @db.Text
+  industry       String?
+  targetAudience String?  @db.Text
+  brandTone      String? // professional, friendly, educational, bold, funny, empathetic
+  brandColors    Json? // { primary, secondary, text }
+  logoUrl        String?
+  banners        Json? // Array of links
+  marketingPitch String?  @db.Text
+  criticalFixes  Json? // Array of fixes
+  contacts       Json? // { emails, phones }
+  socials        Json? // Array of social media links
+  rawScrapedText String?  @db.Text
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  // Relations
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@map("brand_profiles")
+}
+
+// ==========================================
+// 🛡️ MULTI-TENANT RBAC, PBAC & MODERATION
+// ==========================================
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+  BANNED
+}
+
+// SaaS System-Level Administrator Roles (Platform Owners / Operators)
+model SystemRole {
+  id          String   @id @default(cuid())
+  name        String   @unique // e.g., "SUPER_ADMIN", "BILLING_MANAGER", "SUPPORT_LEAD"
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  users       UserSystemRole[]
+  permissions SystemRolePermission[]
+
+  @@map("system_roles")
+}
+
+// SaaS System-Level Action Capabilities
+model SystemPermission {
+  id          String   @id @default(cuid())
+  name        String   @unique // e.g., "system:users:read", "system:workspaces:delete", "system:billing:manage"
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  roles SystemRolePermission[]
+
+  @@map("system_permissions")
+}
+
+// Junction table linking system roles to system permissions
+model SystemRolePermission {
+  roleId       String
+  permissionId String
+
+  // Relations
+  role       SystemRole       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission SystemPermission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@map("system_role_permissions")
+}
+
+// Junction table assigning users to system administrator roles
+model UserSystemRole {
+  userId String
+  roleId String
+
+  // Relations
+  user User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role SystemRole @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([userId, roleId])
+  @@map("user_system_roles")
+}
+
+// Predefined or custom tenant workspace roles
+model WorkspaceRole {
+  id               String   @id @default(cuid())
+  workspaceId      String
+  name             String // e.g., "Editor", "Designer", "Admin"
+  description      String?
+  isSystemTemplate Boolean  @default(false)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  // Relations
+  workspace   Workspace                 @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  members     MembershipRole[]
+  permissions WorkspaceRolePermission[]
+
+  @@unique([workspaceId, name])
+  @@map("workspace_roles")
+}
+
+// Predefined tenant workspace capabilities
+model WorkspacePermission {
+  id          String   @id @default(cuid())
+  name        String   @unique // e.g., "posts:create", "social:connect", "billing:manage"
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  roles       WorkspaceRolePermission[]
+  memberships MembershipPermission[]
+
+  @@map("workspace_permissions")
+}
+
+// Junction table linking workspace roles to workspace capabilities
+model WorkspaceRolePermission {
+  roleId       String
+  permissionId String
+
+  // Relations
+  role       WorkspaceRole       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission WorkspacePermission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@map("workspace_role_permissions")
+}
+
+// Junction table linking workspace members to roles
+model MembershipRole {
+  membershipId String
+  roleId       String
+
+  // Relations
+  membership Membership    @relation(fields: [membershipId], references: [id], onDelete: Cascade)
+  role       WorkspaceRole @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([membershipId, roleId])
+  @@map("membership_roles")
+}
+
+// Direct tenant capability override table (direct PBAC assignment/override)
+model MembershipPermission {
+  membershipId String
+  permissionId String
+  allowed      Boolean @default(true)
+
+  // Relations
+  membership Membership          @relation(fields: [membershipId], references: [id], onDelete: Cascade)
+  permission WorkspacePermission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([membershipId, permissionId])
+  @@map("membership_permissions")
+}
+
+enum AIModel {
+  NONE
+  GEMINI_2_5_FLASH
+  GEMINI_1_5_PRO
+  GPT_4O
+  DALL_E_3
+  IMAGEN_3
+  VEO
+  SORA
+  VEO_SORA
+}
+
+// Global System AI Keys and Configs
+model AIConfig {
+  id           String   @id @default(cuid())
+  provider     String   @unique // e.g., "GEMINI", "OPENAI", "REPLICATE", "OPENROUTER"
+  apiKey       String   @db.Text
+  baseUrl      String?  @db.Text
+  defaultModel String?  @db.Text // e.g., "google/gemini-2.5-pro"
+  settings     Json?    // For custom headers, site parameters etc.
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@map("ai_configs")
+}
+
+// Workspace Limit and Usage Tracker for counter queries optimization
+model WorkspaceLimitUsage {
+  id              String    @id @default(cuid())
+  workspaceId     String    @unique
+  categoriesCount Int       @default(0)
+  templatesCount  Int       @default(0)
+  postsCount      Int       @default(0)
+  repliesCount    Int       @default(0)
+  promptsCount    Int       @default(0)
+  
+  workspace       Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@map("workspace_limit_usages")
+}
+
+// AI credit consumption costing rules configuration
+model AICreditCost {
+  id          String       @id @default(cuid())
+  action      CreditAction @unique
+  cost        Int          @default(1) // Credits required for this action
+  description String?      @db.Text
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  @@map("ai_credit_costs")
+}
+
+// System-wide Global Templates with optimized system prompts for all users
+model GlobalTemplate {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  slug        String   @unique // e.g., "blog-post", "ad-copy", "content-rewriter"
+  title       String
+  description String?  @db.Text
+  prompt      String   @db.Text // Engineered prompt template with variables like {topic}, {keywords}
+  category    String   // e.g., "Popular Templates", "Blog", "Ad Copy", "Writing Tools"
+  icon        String?  // Lucide icon identifier string (e.g. "FileText", "Sparkles")
+  variables   Json?    // Array of variable definition objects [{name: "topic", label: "Topic", placeholder: "..."}]
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("global_templates")
+}
+
+enum CreditAction {
+  POST_GENERATION
+  VIDEO_GENERATION
+  GRAPHICS_GENERATION
+  MESSAGE_AI_REPLY
+  AI_COMMENTS_REPLY
+  TEMPLATE_BLOG_POST
+  TEMPLATE_AD_COPY
+  TEMPLATE_SOCIAL_MEDIA_POST
+  TEMPLATE_EMAIL
+  TEMPLATE_PRODUCT_DESCRIPTION
+  TEMPLATE_VIDEO_SCRIPT
+  TOOL_BLOG_WRITER
+  TOOL_AD_COPY_GENERATOR
+  TOOL_EMAIL_GENERATOR
+  TOOL_CONTENT_REWRITER
+  TOOL_PARAGRAPH_EXPANDER
+  SEO_AUDIT
+  WEBSITE_POST_GENERATION
+}
+
+model VerifiedDomain {
+  id                String              @id @default(cuid())
+  workspaceId       String
+  domain            String              // e.g. "mybusiness.com"
+  verificationToken String              // e.g. "postly-verify-xyz789..."
+  isVerified        Boolean             @default(false)
+  verifiedAt        DateTime?
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+
+  // Floating Bubble Widget Configuration
+  widgetActive      Boolean             @default(false)
+  widgetWhatsApp    String?             // WhatsApp number, null/empty if disabled
+  widgetPhone       String?             // Phone number, null/empty if disabled
+  widgetMessage     String?             // Custom WhatsApp pre-filled message
+  widgetPosition    String              @default("bottom-right") // "bottom-left" | "bottom-right"
+  widgetColor       String              @default("#7c3aed") // Branding accent color
+  
+  workspace         Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  blogPosts         BlogPost[]
+  customForms       CustomForm[]
+  analyticsEvents   WebAnalyticsEvent[]
+
+  @@unique([workspaceId, domain])
+  @@map("verified_domains")
+}
+
+model BlogPost {
+  id            String         @id @default(cuid())
+  domainId      String
+  title         String
+  slug          String
+  content       String         @db.Text
+  summary       String?        @db.Text
+  featuredImage String?
+  author        String?
+  status        String         @default("DRAFT") // "DRAFT", "PUBLISHED"
+  publishedAt   DateTime?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  
+  domain        VerifiedDomain @relation(fields: [domainId], references: [id], onDelete: Cascade)
+
+  @@unique([domainId, slug])
+  @@map("blog_posts")
+}
+
+model CustomForm {
+  id               String           @id @default(cuid())
+  workspaceId      String
+  domainId         String?
+  name             String
+  fields           Json             // JSON array: [{id: "email", type: "email", label: "Email Address", required: true}]
+  submitButtonText String           @default("Submit")
+  successMessage   String           @default("Thank you for your submission!")
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+  
+  workspace        Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  domain           VerifiedDomain?  @relation(fields: [domainId], references: [id], onDelete: SetNull)
+  submissions      FormSubmission[]
+
+  @@map("custom_forms")
+}
+
+model FormSubmission {
+  id         String     @id @default(cuid())
+  formId     String
+  data       Json       // Form fields: {name: "John", email: "john@example.com"}
+  userAgent  String?
+  ipAddress  String?
+  referrer   String?
+  createdAt  DateTime   @default(now())
+  
+  form       CustomForm @relation(fields: [formId], references: [id], onDelete: Cascade)
+
+  @@map("form_submissions")
+}
+
+model WebAnalyticsEvent {
+  id         String         @id @default(cuid())
+  domainId   String
+  sessionId  String         // Maps multiple events to a single user visit
+  eventType  String         // "PAGE_VIEW" | "CLICK" | "ENGAGEMENT"
+  url        String         // Page URL path
+  referrer   String?
+  eventData  Json?          // { timeSpentSeconds: 45 } or { elementText: "Buy Now", elementId: "btn-pay" }
+  deviceType String?        // "mobile" | "desktop" | "tablet"
+  browser    String?
+  country    String?
+  
+  // UTM Attribution columns
+  utmSource   String?
+  utmMedium   String?
+  utmCampaign String?
+  utmTerm     String?
+  utmContent  String?
+  
+  // Identity Resolution columns
+  anonId      String?
+  leadId      String?
+  
+  createdAt  DateTime       @default(now())
+  
+  domain     VerifiedDomain @relation(fields: [domainId], references: [id], onDelete: Cascade)
+  lead       Lead?          @relation(fields: [leadId], references: [id], onDelete: SetNull)
+
+  @@map("web_analytics_events")
+}
+
+model ConversionFunnel {
+  id          String   @id @default(cuid())
+  workspaceId String
+  name        String
+  steps       Json     // Array of page paths: ["/", "/pricing", "/signup"]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@map("conversion_funnels")
+}
+
+
+
