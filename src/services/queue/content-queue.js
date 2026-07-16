@@ -57,9 +57,9 @@ export async function enqueueContentGeneration(contentPlanId) {
   return { status: 'inline_executed' };
 }
 
-// Background worker setup (only runs if Redis connection is active)
+// Background worker setup (only runs if Redis connection is active and IS_WORKER flag is set)
 export let contentWorker = null;
-if (isRedisAvailable()) {
+if (isRedisAvailable() && process.env.IS_WORKER === 'true') {
   try {
     contentWorker = new Worker(
       QUEUE_NAME,
