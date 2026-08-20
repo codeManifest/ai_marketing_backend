@@ -146,7 +146,10 @@ import {
 
 const router = Router();
 
-// Enforce authentication on all workspace routes
+// Public routes (accessible during website audit, landing page demo, and onboarding setup)
+router.post('/workspaces/scrape', scrapeBrand);
+
+// Enforce authentication on protected workspace routes
 router.use(requireAuth);
 
 // ==========================================
@@ -155,7 +158,6 @@ router.use(requireAuth);
 router.post('/workspaces', createWorkspace);
 router.get('/workspaces', listWorkspaces);
 router.get('/workspaces/limits', getLimits);
-router.post('/workspaces/scrape', scrapeBrand);
 router.post('/workspaces/onboarding', onboarding);
 
 router.get('/workspaces/:workspaceId', getWorkspaceDetails);
